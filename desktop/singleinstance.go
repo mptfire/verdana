@@ -106,13 +106,16 @@ func startInstanceListener(dataDir string) {
 		return
 	}
 	forwardSecret = hex.EncodeToString(secret)
-	portFile := fmt.Sprintf("%d:%s", ln.Addr().(*net.TCPAddr).Port, forwardSecret)
+	content := fmt.Sprintf("%d:%s", ln.Addr().(*net.TCPAddr).Port, forwardSecret)
 	_ = os.MkdirAll(dataDir, 0700)
-	if err := os.WriteFile(portFilePath(dataDir), []byte(portFile), 0600); err != nil {
+	if err := os.WriteFile(portFilePath(dataDir), []byte(content), 0600); err != nil {
 		ln.Close()
 		log.Warn().Err(err).Msg("could not write the launcher port file")
 		return
 	}
+	thisPortFile = portFilePath(dataDir)
+	thisPortFileContent = content
+	thisPortListener = ln
 
 	go func() {
 		defer ln.Close()
@@ -125,6 +128,34 @@ func startInstanceListener(dataDir string) {
 		}
 	}()
 }
+
+// stopInstanceListener closes the listener and takes the port file with it
+// on the way out, provided the file still holds this run's own record (so an
+// exiting launcher never deletes a live replacement launcher's port file).
+func stopInstanceListener() {
+	if thisPortListener != nil {
+		_ = thisPortListener.Close()
+		thisPortListener = nil
+	}
+	if thisPortFile == "" {
+		return
+	}
+	if cur, err := os.ReadFile(thisPortFile); err == nil && string(cur) == thisPortFileContent {
+		if err := os.Remove(thisPortFile); err != nil && !os.IsNotExist(err) {
+			log.Debug().Err(err).Msg("could not remove the launcher port file")
+		}
+	}
+	thisPortFile = ""
+	thisPortFileContent = ""
+}
+
+// thisPortFile, thisPortFileContent, and thisPortListener track the port
+// file and listener owned by this run.
+var (
+	thisPortFile        string
+	thisPortFileContent string
+	thisPortListener    net.Listener
+)
 
 func serveForward(conn net.Conn) {
 	defer conn.Close()
